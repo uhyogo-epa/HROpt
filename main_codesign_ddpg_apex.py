@@ -18,17 +18,12 @@ class Worker:
         self.device = device    
         self.env = MultiyearEnv(agent_idx,mode)
         self.agent = CodesignDDPGApeXagent(observation_space, action_space, rho_space, max_action)
-       
-        self.actor = Actor(observation_space, action_space, rho_space,max_action).to(device)
-        self.actor_target = copy.deepcopy(self.actor)
-        self.critic = Critic(observation_space, action_space,rho_space).to(device)
-        self.critic_target = copy.deepcopy(self.critic)
         self.max_action   = max_action
         
     def run_episode(self, observation_space, action_space, rho_space, max_size, noise, gamma, max_step, weights_actor, weights_critic, mu, sigma, P_inv,update_cycles):
         # 重みの更新
-        self.actor.load_state_dict(weights_actor)
-        self.critic.load_state_dict(weights_critic)
+        self.agent.actor.load_state_dict(weights_actor)
+        self.agent.critic.load_state_dict(weights_critic)
         
         # 環境の初期化
         rho = np.random.normal(mu, sigma)
@@ -50,17 +45,12 @@ class Worker:
                 # 最初の10エピソードは完全にランダムな行動を選択
                 action = self.max_action * np.random.rand(action_dim)
             else:
-                # 11エピソード目以降はネットワークによる推論 + ノイズ
-                with torch.no_grad():
-                    action = self.actor(
-                        torch.FloatTensor(obs).unsqueeze(0).to(self.device),
-                        torch.FloatTensor(rho).unsqueeze(0).to(self.device),
-                    ).cpu().numpy().flatten()
-                
-                # ガウスノイズ等を追加（既存のロジック）
-                noise_sample = np.random.normal(0, self.max_action * noise, size=5)
-                action = (action + noise_sample).clip(-self.max_action, self.max_action)
-            # --- ここまで修正部分 ---
+                action = self.agent.get_action(obs, rho)
+
+                noise_sample = np.random.normal(
+                   0, self.max_action * noise, size=action_dim
+               )
+                action = (action + noise_sample).clip(0.0, 1.0)
 
             next_state, reward, done, revenue = self.env.step(action)
             local_buffer.append((obs, action, next_state, reward, done, rho))
@@ -84,36 +74,24 @@ class Learner:
         self.target_update_period = target_update_period
         self.lr_mu = lr_mu
         self.lr_sigma = lr_sigma
-
-        self.actor = Actor(observation_space, action_space, rho_space,max_action).to(device)
-        self.actor_target = copy.deepcopy(self.actor)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),lr = lr_actor)
-
-        self.critic = Critic(observation_space, action_space,rho_space).to(device)
-        self.critic_target = copy.deepcopy(self.critic)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr = lr_critic)
         self.replay_buffer = ReplayMemory(observation_space, action_space, rho_space, 500000)
-        
-        self.agent.actor = self.actor
-        self.agent.actor_target = self.actor_target
-        self.agent.critic = self.critic
-        self.agent.critic_target = self.critic_target
+
         
     def get_weights(self):
-        return self.actor.state_dict(),self.critic.state_dict()
+        return self.agent.actor.state_dict(),self.agent.critic.state_dict()
     
     def add_memory(self, batch):
         self.replay_buffer.add_batch(batch)
     
     def learn(self):
         if self.replay_buffer.size < 20000:
-            return 
+            return self.get_weights()
 
         for _ in range(100):
             self.agent.update_step_from_buffer(self.replay_buffer)
             
-        return self.actor.state_dict(),self.critic.state_dict()
-
+        return self.get_weights()
+    
     def update_phi(self, mu, sigma, rho_E_list, rho_P_list, rho_PV_list,income_list,
                cost_per_kWh, cost_per_kW, cost_per_PV):
 
@@ -151,16 +129,16 @@ class Tester:
         self.noise = noise
         self.agent_idx = agent_idx
         self.env = MultiyearEnv(agent_idx,mode)
-        self.actor = Actor(observation_space, action_space, rho_space,max_action).to(device)
-        self.actor_target = copy.deepcopy(self.actor)
-        self.critic = Critic(observation_space, action_space,rho_space).to(device)
-        self.critic_target = copy.deepcopy(self.critic)
         self.max_action = max_action
+        self.agent = CodesignDDPGApeXagent(
+          observation_space, action_space, rho_space, max_action
+)
         self.device = device
         
-   def run_episode(self, observation_space,action_space,rho_space,max_size, noise, gamma, max_step, current_weights_actor, current_weights_critic, mu, sigma,P_inv,update_cycles):
-       self.actor.load_state_dict(current_weights_actor)
-       self.critic.load_state_dict(current_weights_critic)
+   def run_episode(self, observation_space,action_space,rho_space,max_size, noise, gamma, max_step, weights_actor, weights_critic, mu, sigma,P_inv,update_cycles):
+       self.agent.actor.load_state_dict(weights_actor)
+       self.agent.critic.load_state_dict(weights_critic)
+
        rho = np.random.normal(mu, sigma)
        rho = np.maximum(rho,0.05)
        E_B, P_B, P_pv = rho
@@ -179,7 +157,7 @@ class Tester:
        episode_bidding_reg_up_history = []
        episode_bidding_reg_dn_history = []
        episode_bidding_res_history    = []
-       episode_p_pred_history         = []
+       episode_bidding_reserve_history         = []
        action_dim = 5
        for t in range(max_step):
             # --- ここから修正部分 ---
@@ -187,18 +165,13 @@ class Tester:
                 # 最初の10エピソードは完全にランダムな行動を選択
                 action = self.max_action * np.random.rand(action_dim)
            else:
-                # 11エピソード目以降はネットワークによる推論 + ノイズ
-                with torch.no_grad():
-                    action = self.actor(
-                        torch.FloatTensor(obs).unsqueeze(0).to(self.device),
-                        torch.FloatTensor(rho).unsqueeze(0).to(self.device),
-                    ).cpu().numpy().flatten()
-                
-                # ガウスノイズ等を追加（既存のロジック）
-                noise_sample = np.random.normal(0, self.max_action * noise, size=5)
-                action = (action + noise_sample).clip(-self.max_action, self.max_action)
-            # --- ここまで修正部分 ---
- 
+                action = self.agent.get_action(obs, rho)
+
+                noise_sample = np.random.normal(
+                    0, self.max_action * noise, size=action_dim
+                )
+                action = (action + noise_sample).clip(0.0, 1.0)
+
            next_state, reward, done, revenue = self.env.step(action)
            local_buffer.append((obs, action, next_state, reward, done,rho))
            obs = next_state
@@ -214,11 +187,11 @@ class Tester:
            episode_capacity_payment_history.append(self.env.capacity_payment)
            episode_degradation_cost_history.append(self.env.degradation_cost)
            episode_imbalance_penalty_history.append(self.env.imbalance_revenue)
-           episode_p_pred_history.append(self.env.p_pred)
+           episode_bidding_reserve_history.append(self.env.b_res)
            if done:
                break
 
-       return self.agent_idx, rho, episode_reward, local_buffer, episode_revenue, episode_bidding_energy_history,episode_bidding_reg_up_history,episode_bidding_reg_dn_history,episode_bidding_res_history, episode_reward_history, episode_revenue_energy_history,episode_revenue_fcas_history,episode_capacity_payment_history,episode_imbalance_penalty_history,episode_degradation_cost_history,episode_p_pred_history
+       return self.agent_idx, rho, episode_reward, local_buffer, episode_revenue, episode_bidding_energy_history,episode_bidding_reg_up_history,episode_bidding_reg_dn_history,episode_bidding_res_history, episode_reward_history, episode_revenue_energy_history,episode_revenue_fcas_history,episode_capacity_payment_history,episode_imbalance_penalty_history,episode_degradation_cost_history,episode_bidding_reserve_history
 # ===============================
 #  Main Training Loop
 # ===============================
@@ -238,13 +211,13 @@ def main(num_cpus=12, gamma=0.99):
     
     #ノイズの設定
     POLICY_NOISE      = 0.5
-    NOISE_DECAY       = 0.995
+    NOISE_DECAY       = 0.9995
     NOISE_MIN         = 0.01
     
     REPLAY_MEMORY_SIZE = 100000
-    tau = 1e-3
+    tau = 5e-3
     max_step = 8760
-    num_updates  = 1000
+    num_updates  = 5000
     device = torch.device("cpu")
 
     ##############################
@@ -252,7 +225,7 @@ def main(num_cpus=12, gamma=0.99):
     ##############################ra-ni
     learning_rate_mu    = 0
     learning_rate_sigma = 0
-    min_epi_codesign = 5000
+    min_epi_codesign = 20000
     device = torch.device("cpu")
     
     # data for co-design
@@ -264,7 +237,7 @@ def main(num_cpus=12, gamma=0.99):
     cost_per_kW_max=372/(10*4)#$372/kWh/10yr*150yen/$*0.8
     cost_per_kw_pv = 100/10
     mu    = np.array([P_inv*battery_times_mu_E ,P_inv*battery_times_mu_P,P_inv*battery_times_mu_pv],dtype= float)
-    sigma = np.array([0.2, 0.2,0.2],dtype = float)
+    sigma = np.array([0.00001, 0.0000001,0.000001],dtype = float)
 
     
     income_list = [] ############# TODO: reward -> income
@@ -282,7 +255,7 @@ def main(num_cpus=12, gamma=0.99):
     capacity_payment_history = []
     imbalance_revenue_history = []
     degradation_cost_history = []
-    p_pred_history             = []
+    bidding_reserve_history             = []
     log_dir = 'codesign_apex_logs/test_run_'+datetime.now().strftime('%m%d%H%M')
     writers  = SummaryWriter(log_dir=log_dir)
     
@@ -388,7 +361,7 @@ def main(num_cpus=12, gamma=0.99):
                 episode_capacity_payment = test_score[12]
                 episode_imbalance_penalty = test_score[13]
                 episode_degradation_cost = test_score[14]
-                episode_p_pred         = test_score[15]
+                episode_bidding_reserve         = test_score[15]
                 writers.add_scalar('wip_tester/reward', episode_reward, update_cycles)
                 writers.add_scalar('wip_tester/revenue', episode_revenue, update_cycles)
                 bidding_energy_history.append(episode_bidding_energy)
@@ -400,7 +373,7 @@ def main(num_cpus=12, gamma=0.99):
                 imbalance_revenue_history.append(episode_imbalance_penalty)
                 capacity_payment_history.append(episode_capacity_payment)
                 degradation_cost_history.append(episode_degradation_cost)
-                p_pred_history.append(episode_p_pred)
+                bidding_reserve_history.append(episode_bidding_reserve)
                 # writers.add_scalar('wip_tester/Deviation_penalty', sum(test_score[4]), update_cycles)
                 # writers.add_scalar('wip_tester/Degradation', sum(test_score[5]), update_cycles)
                
@@ -413,8 +386,8 @@ def main(num_cpus=12, gamma=0.99):
                     bidding_reg_up_df.to_csv(f'ddpg_apex_action/episode_bidding_reg_up_{current_time}.csv',index= False)
                     bidding_reg_dn_df = pd.DataFrame(episode_bidding_reg_dn)
                     bidding_reg_dn_df.to_csv(f'ddpg_apex_action/episode_bidding_reg_dn_{current_time}.csv',index= False)
-                    p_pred_df = pd.DataFrame(episode_p_pred)
-                    p_pred_df.to_csv(f'ddpg_apex_action/episode_p_pred_{current_time}.csv',index= False)                 
+                    bidding_reserve_df = pd.DataFrame(episode_bidding_reserve)
+                    bidding_reserve_df.to_csv(f'ddpg_apex_action/episode_bidding_reserve_{current_time}.csv',index= False)                 
                     revenue_energy_df = pd.DataFrame(episode_revenue_energy)
                     revenue_energy_df.to_csv(f'ddpg_apex_results/episode_revenue_energy_{current_time}.csv',index= False)
                     revenue_fcas_df = pd.DataFrame(episode_revenue_fcas)
@@ -434,10 +407,10 @@ def main(num_cpus=12, gamma=0.99):
                         learner.update_phi.remote(
                             mu,
                             sigma,
-                            rho_E_list[-10:],
-                            rho_P_list[-10:],
-                            rho_PV_list[-10:],
-                            income_list[-10:],
+                            rho_E_list[-50:],
+                            rho_P_list[-50:],
+                            rho_PV_list[-50:],
+                            income_list[-50:],
                             cost_per_kWh_max,
                             cost_per_kW_max,
                             cost_per_kw_pv
