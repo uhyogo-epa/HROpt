@@ -18,7 +18,7 @@ class MultiyearEnv:
             data_path + "IEEE_TEMPR_value_stacking/data/caiso_as_prices_2022.csv",
             encoding="shift_jis")
         self.pv_actual = pd.read_csv(
-            data_path + "IEEE_TEMPR_value_stacking/data/caiso_hourly_solar_2022.csv",
+            data_path + "IEEE_TEMPR_value_stacking/data/caiso_solar_hourly_2022.csv",
             encoding="shift_jis")
         
         self.episode_count = 0
@@ -33,14 +33,14 @@ class MultiyearEnv:
         self.month_index = self.calculate_month_index(self.days_per_month, self.hours_per_day)
         
         if self.agent_idx == 'all':
-            start_idx, end_idx = [4344,4344+24* 7]
+            start_idx, end_idx = [0,8760]
         else:
             start_idx, end_idx = self.month_index[self.agent_idx]
             
         # ### 修正点1：価格データの正規化 ###
-        self.price_norm_factor_1 = 600  # データの最大付近に設定
-        self.price_norm_factor_2 = 500 # データの最大付近に設定
-        self.price_norm_factor_3 = 50       
+        self.price_norm_factor_1 = 500  # データの最大付近に設定
+        self.price_norm_factor_2 = 600 # データの最大付近に設定
+        self.price_norm_factor_3 = 50     
         self.pv_actual_norm_all = self.pv_actual.iloc[:, 1].to_numpy() / 14000
         self.pv_actual_norm = self.pv_actual_norm_all[start_idx:end_idx]
         
@@ -55,8 +55,8 @@ class MultiyearEnv:
 
         # BESS parameters
         self.eta_c, self.eta_d, self.delta_t = 0.95, 0.95, 1.0
-        self.soc_min, self.soc_max, self.kappa = 0.1, 0.9, 0.3
-        self.c_deg, self.pi_imb = 1.0, 1.0
+        self.soc_min, self.soc_max, self.kappa = 0.1, 0.9, 0.7
+        self.c_deg, self.pi_imb = 1.0, 0.5
         self.N_AGC = 900
         self.AGC_DT = 4.0 / 3600.0
 
@@ -67,7 +67,7 @@ class MultiyearEnv:
         self.results_path = os.path.join(results_dir, f"episode_results_{mode}_{now}.csv")
 
         # NN setup
-        self.hidden_space = 64
+        self.hidden_space = 128
         self.num_layers = 1
         self.batch_size = 1
         self.action_space, self.rho_space, self.state_space = 5, 3, 6
@@ -200,7 +200,7 @@ class MultiyearEnv:
         
         P_poi_max, P_poi_min = self.P_inv, -self.P_inv
         P_poi = 2 * P_poi_max 
-        H_up, H_dn, H_res = 0.5, 0.5, 1.0
+        H_up, H_dn, H_res = 0.25, 0.25, 0.5
 
         self.b_res = min(a_res * P_poi, self.P_B, E_up_batt / H_res)
         M_up_batt = min(self.P_B - self.b_res, (E_up_batt - self.b_res * H_res) / H_up)
@@ -219,7 +219,7 @@ class MultiyearEnv:
         
         # インバランス計算
         E_imb_dn = min(max(self.P_B - b_dn_batt, 0) * self.delta_t, max(E_dn_batt - b_dn_batt * H_dn, 0))
-        agc_signal = np.random.choice([-1,-0.5,0,0.5, 1], size=self.N_AGC)
+        agc_signal = np.random.choice([-1,0,0,0,0,0,0, 1], size=self.N_AGC)
         h_up = np.sum(agc_signal[agc_signal > 0]) * self.AGC_DT
         h_dn = np.sum(agc_signal[agc_signal < 0]) * self.AGC_DT
         h_res = 1.0 if np.random.rand() < 0.5 / 168 else 0.0
@@ -259,7 +259,7 @@ class MultiyearEnv:
             self.imbalance_revenue = (1 + self.pi_imb) * lambda_ene * E_imb
         self.revenue_fcas = (lambda_sr * self.b_res + lambda_up * self.b_up + lambda_dn * self.b_dn) * self.delta_t
         
-        phi_pv, H_cr, lambda_ra = 0.3, 4.0, 8.31 * 12 / 8760
+        phi_pv, H_cr, lambda_ra = 0.4, 4.0, 11.54
         self.capacity_payment = lambda_ra * min(P_poi_max, phi_pv * self.P_pv + min(self.P_B, self.E_B / H_cr))
         self.degradation_cost = self.c_deg * (E_chgE + E_chgAS + self.E_disE + E_disAS)
 
@@ -267,15 +267,15 @@ class MultiyearEnv:
         revenue = self.revenue_energy + self.revenue_fcas + self.capacity_payment
         reward_sum = (self.revenue_energy + self.revenue_fcas + self.capacity_payment + self.imbalance_revenue - self.degradation_cost)
         if self.agent_idx == 'all':
-            reward = reward_sum 
+            reward = reward_sum /10000
         else:
-            reward = reward_sum * 365 /   self.days_per_month[self.agent_idx]
+            reward = reward_sum * 365 / (self.days_per_month[self.agent_idx] * 10000)
             
         # 保存
         self.total_revenue_energy += self.revenue_energy
         self.total_revenue_fcas += self.revenue_fcas
         self.t += 1
-        if self.agent_idx == 'all' and self.t % 100 ==0:
+        if self.agent_idx == 'all' and self.t % 1000 ==0:
            print(
            "a_e", a_e,
            "b_res", self.b_res,
