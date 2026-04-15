@@ -11,8 +11,8 @@ class PV_BESS_AS_codesign_Env:
         # =========================
         # Data loading
         # =========================
-        data_path = "C:/Users/manta/OneDrive/ドキュメント/"
-        #data_path = "/home/students2/mantani/"
+        #data_path = "C:/Users/manta/OneDrive/ドキュメント/"
+        data_path = "/home/students2/mantani/"
         self.market_data = pd.read_csv(
             data_path+"IEEE_TEMPR_value_stacking/data/caiso_rtm_prices_week_hourly_avg.csv",
             encoding="shift_jis")
@@ -37,7 +37,7 @@ class PV_BESS_AS_codesign_Env:
         self.delta_t = 1.0  # 1 hour
         self.soc_min = 0.1
         self.soc_max = 0.9
-        self.kappa   = 0.15
+        self.kappa   = 0.3
 
         # cost / penalty
         self.c_deg  = 1.0
@@ -70,7 +70,7 @@ class PV_BESS_AS_codesign_Env:
             ]).to_csv(self.results_path, index=False)
         
         # dimention
-        self.action_space      = 5
+        self.action_space      = 6
         self.rho_space         = 3
         self.observation_space = 6
         
@@ -112,13 +112,13 @@ class PV_BESS_AS_codesign_Env:
             # Action
             action = np.asarray(action).reshape(-1)
             a_solar, a_e, a_res, self.a_up, self.a_dn, self.a_imb = np.clip(action, 0.0, 1.0)
-
+    
             # Actual Price
             lambda_ene = self.price_energy[self.t]
             lambda_up  = self.price_up[self.t]
             lambda_dn  = self.price_dn[self.t]
             lambda_sr  = self.price_sr[self.t]
-            pv_actual  = self.pv_actual_norm[self.t]
+            
             # Actual PV output
             current_solar = self.pv_actual_norm[self.t] * self.P_pv
 
@@ -131,7 +131,7 @@ class PV_BESS_AS_codesign_Env:
             if self.mode == 'hybrid':
                 M_pv = self.kappa * self.p_pred
             else:
-                current_solar = min (current_solar, self.P_inv)
+                current_solar = min(current_solar, self.P_inv)
                 M_pv = min(self.kappa * self.p_pred, self.P_inv)
             
             # BESSのエネルギー余力 
@@ -170,18 +170,30 @@ class PV_BESS_AS_codesign_Env:
             self.b_en = a_e * (P_poi_max - self.b_res - self.b_up) \
                         + (1-a_e) * (P_poi_min + self.b_dn)
 
-            bdis_max = max(min(
+            # bdis_max = min(
+            #     self.P_B - self.b_res - (self.b_up - b_up_pv),
+            #     (E_up_batt - self.b_res * H_res - (self.b_up - b_up_pv) * H_up) / self.delta_t
+            # )
+            
+            bdis_max = max(
+                min(
                 self.P_B - self.b_res - (self.b_up - b_up_pv),
-                (E_up_batt - self.b_res * H_res - (self.b_up - b_up_pv) * H_up) / self.delta_t),
-                0.0
+                (E_up_batt - self.b_res * H_res - (self.b_up - b_up_pv) * H_up) / self.delta_t
+            ), 0.0
             )
-
+            
             b_dn_batt = max(self.b_dn - max(current_solar-b_up_pv,0), 0)         
-            bchg_max = max(min(
+            # bchg_max = min(
+            #     self.P_B - b_dn_batt ,
+            #     (E_dn_batt - b_dn_batt * H_dn) / self.delta_t
+            # )
+            bchg_max = max(
+                min(
                 self.P_B - b_dn_batt ,
-                (E_dn_batt - b_dn_batt * H_dn) / self.delta_t),
-                0.0                
-            )
+                (E_dn_batt - b_dn_batt * H_dn) / self.delta_t
+            ),
+                0.0
+                )
 
             # 蓄電池の制約を考慮してエネルギー市場に入札
             b_en_max  = self.p_pred + bdis_max
@@ -254,7 +266,7 @@ class PV_BESS_AS_codesign_Env:
                 self.b_e_bat = self.b_en - b_e_pv
 
                 if self.b_e_bat > 0:
-                    self.b_e_bat = min(self.b_e_bat,  b_en_max)
+                    self.b_e_bat = min(self.b_e_bat, b_en_max)
                 else:
                     self.b_e_bat = max(self.b_e_bat, b_en_min)
                 
@@ -292,11 +304,11 @@ class PV_BESS_AS_codesign_Env:
             capacity_payment = lambda_ra * min(P_poi_max, phi_pv * self.P_pv + min(self.P_B, self.E_B / H_cr))
             
             degradation_cost = self.c_deg * (E_chgE + E_chgAS + self.E_disE + E_disAS)
-            w_pred = 10
-            prediction_penalty = w_pred * (a_solar - pv_actual)**2 * self.delta_t
+            w_pred = 10000
+            prediction_penalty = w_pred * (a_solar - self.pv_actual_norm[self.t])**2 * self.delta_t
             
-            revenue = (revenue_energy + revenue_fcas + capacity_payment) 
-            reward = (revenue_energy + revenue_fcas + capacity_payment +  imbalance_revenue - degradation_cost - prediction_penalty) / 10000
+            revenue = (revenue_energy + revenue_fcas + capacity_payment)  
+            reward  = (revenue_energy + revenue_fcas + capacity_payment +  imbalance_revenue - degradation_cost - prediction_penalty) / 10000
             self.total_revenue_energy += revenue_energy
             self.total_revenue_fcas += revenue_fcas
             self.total_capacity_payment += capacity_payment

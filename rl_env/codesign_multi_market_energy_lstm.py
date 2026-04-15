@@ -9,7 +9,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 class PV_BESS_AS_codesign_lstm_Env:
-    def __init__(self, mode="co-located",seed = 1):
+    def __init__(self, mode="co-located",seed = 1, results_dir=None, H_cr=4.0, Pres=1.0, Pup=1.0, Pdn=1.0):
         self.mode = mode
 
         # =========================
@@ -29,14 +29,15 @@ class PV_BESS_AS_codesign_lstm_Env:
         
         self.pv_actual_norm = self.pv_actual.iloc[:,1].to_numpy() / 14000
         self.price_energy   = self.market_data.iloc[:, 1].to_numpy()
-        self.price_sr       = self.ancillary_data.iloc[:, 1].to_numpy()
-        self.price_up       = self.ancillary_data.iloc[:, 2].to_numpy()
-        self.price_dn       = self.ancillary_data.iloc[:, 3].to_numpy()
+        self.price_sr       = self.ancillary_data.iloc[:, 1].to_numpy() * Pres
+        self.price_up       = self.ancillary_data.iloc[:, 2].to_numpy() * Pup
+        self.price_dn       = self.ancillary_data.iloc[:, 3].to_numpy() * Pdn
         self.pv_actual_norm = self.pv_actual_norm[4344:4344+24*7]
         self.price_energy = self.price_energy[4344:4344+24*7]
         self.price_up = self.price_up[4344:4344+24*7]
         self.price_sr = self.price_sr[4344:4344+24*7]
         self.price_dn = self.price_dn[4344:4344+24*7]
+        
         # =========================
         # BESS parameters
         # =========================
@@ -49,7 +50,9 @@ class PV_BESS_AS_codesign_lstm_Env:
 
         # cost / penalty
         self.c_deg  = 1.0
-        self.pi_imb = 0.5
+        self.pi_imb = 1.0
+                
+        self.H_cr = H_cr
         
         # =========================
         # AGC parameters
@@ -60,13 +63,21 @@ class PV_BESS_AS_codesign_lstm_Env:
         # =========================
         # Result saving
         # =========================
-        results_dir = "./results"
-        os.makedirs(results_dir, exist_ok=True)
-        now = datetime.now().strftime('%Y%m%d_%H%M')
-        self.results_path = os.path.join(
-            results_dir, f"episode_results_{mode}_{seed}_{now}.csv"
-        )
-
+        if not results_dir:
+            results_dir = "./results"
+            os.makedirs(results_dir, exist_ok=True)
+            now = datetime.now().strftime('%Y%m%d_%H%M')
+            self.results_path = os.path.join(
+                results_dir, f"episode_results_{now}_{mode}_{seed}.csv"
+            )
+        else: 
+            os.makedirs(results_dir, exist_ok=True)
+            self.results_path = os.path.join(
+                results_dir, f"episode_results_{seed}.csv"
+            )
+            
+        self.log_cnt = 0
+    
         if not os.path.exists(self.results_path):
             pd.DataFrame(columns=[
                 "revenue_energy",
@@ -86,17 +97,16 @@ class PV_BESS_AS_codesign_lstm_Env:
         self.state_space = 6
         self.observation_space = self.hidden_space*2 + self.state_space 
 
-
         self.lstm = nn.LSTM(self.state_space-1, self.hidden_space ,self.num_layers, batch_first=True)
-        self.linear = nn.Linear(self.hidden_space, self.state_space-1)
-        self.optimizer = optim.Adam(
-    list(self.lstm.parameters()) + list(self.linear.parameters()),
-    lr=1e-4
-)
+        self.linear = nn.Linear(self.hidden_space, self.state_space-1)        
+        self.optimizer = optim.Adam( list(self.lstm.parameters()) + list(self.linear.parameters()), lr=1e-4)
+
     def init_hidden(self):
         h0 = torch.zeros(self.num_layers, self.batch_size, self.hidden_space)
         c0 = torch.zeros(self.num_layers, self.batch_size, self.hidden_space)
         return h0,c0
+    
+    
     # =========================
     # Reset
     # =========================
@@ -106,14 +116,15 @@ class PV_BESS_AS_codesign_lstm_Env:
 
         self.P_pv = P_pv     # PVアレー容量
         self.P_inv = P_inv   # PV Inverter & POC 
-        self.E_B  = E_B      # Battery Energy
-        self.P_B  = P_B      # Battery Power
+        self.E_B  = E_B if E_B>0 else 0  # Battery Energy
+        self.P_B  = P_B if P_B>0 else 0  # Battery Power
         self.total_revenue_energy    = 0.0
         self.total_revenue_fcas      = 0.0
         self.total_capacity_payment  = 0.0
         self.total_cost_degradation  = 0.0
         self.total_imbalance_penalty = 0.0
         self.total_prediction_penalty = 0.0
+        self.pred_price_energy_list = []
         
         self.batch_size = 1
         self.h, self.c = self.init_hidden()
@@ -207,7 +218,8 @@ class PV_BESS_AS_codesign_lstm_Env:
             #  PVからのAS入札可能量 ==============
             pv_pred = predicted_state[0, 0].item()
             pv_pred = np.clip(pv_pred, 0.0, 1.0)
-
+            pred_price_energy = predicted_state[0,1].item()
+            self.pred_price_energy_list.append(pred_price_energy)
             self.p_pred = pv_pred * self.P_pv
             if self.mode == 'hybrid':
                 M_pv = self.kappa * self.p_pred
@@ -279,11 +291,10 @@ class PV_BESS_AS_codesign_lstm_Env:
                             )
 
             # --- AGC実績 ---
-            agc_signal = np.random.choice([-1,-0.5,0,0.5, 1], size=self.N_AGC)
+            agc_signal = np.random.choice([-1,0,0,0,0,0,0, 1], size=self.N_AGC)
             h_up = np.sum(agc_signal[agc_signal > 0])  * self.AGC_DT
             h_dn = np.sum(agc_signal[agc_signal < 0]) * self.AGC_DT
             h_res = 1.0 if np.random.rand() < 0.5 / 168 else 0.0
-
                 
             # インバランス & 実充放電量(Hybrid)
             self.E_disE, E_chgE,self.E_short  = 0.0, 0.0, 0.0
@@ -294,13 +305,13 @@ class PV_BESS_AS_codesign_lstm_Env:
                 
                    # BESSのインバランス解消のための放電可能量
                    E_imb_up = min(
-                   max(self.P_B - self.b_res - self.b_up ,0.0) * self.delta_t, 
-                   max(E_up_batt - self.b_res * H_res - self.b_up * H_up, 0.0)
+                     max(self.P_B - self.b_res - self.b_up ,0.0) * self.delta_t, 
+                     max(E_up_batt - self.b_res * H_res - self.b_up * H_up, 0.0)
                    )
                    self.E_disE = min(
-                       self.a_imb * (self.b_en - current_solar) * self.delta_t,
+                       self.a_imb * (self.b_en - max(current_solar-b_up_pv,0)) * self.delta_t,
                        E_imb_up
-                   )   
+                   )
                    
                    # 不足インバランス量
                    self.E_short = (self.b_en - max(current_solar-b_up_pv, 0))*self.delta_t -self.E_disE
@@ -319,7 +330,8 @@ class PV_BESS_AS_codesign_lstm_Env:
                         E_imb_dn)
                     
                     # 不足インバランスの計算
-                    x_cur = max(b_up_pv * self.delta_t - E_chgE , 0)  
+                    x_cur = max(b_up_pv*self.delta_t -E_chgE, current_solar*self.delta_t -E_chgE -self.P_inv, 0)  
+                    
                     E_sur = (current_solar - self.b_en) * self.delta_t - E_chgE - x_cur 
                     E_imb = E_sur
                     
@@ -366,35 +378,41 @@ class PV_BESS_AS_codesign_lstm_Env:
                 self.imbalance_revenue = (1 - self.pi_imb) * lambda_ene * E_imb
             else:
                 self.imbalance_revenue = (1 + self.pi_imb) * lambda_ene * E_imb
+            
             self.revenue_fcas = (lambda_sr * self.b_res + lambda_up * self.b_up + lambda_dn * self.b_dn) * self.delta_t
             
             # 容量市場
-            phi_pv, H_cr, lambda_ra = 0.4, 4.0, 11.54
+            phi_pv, H_cr, lambda_ra = 0.4, self.H_cr, 8310*12/8760
             self.capacity_payment = lambda_ra * min(P_poi_max, phi_pv * self.P_pv + min(self.P_B, self.E_B / H_cr)) * self.delta_t
             
             self.degradation_cost = self.c_deg * (E_chgE + E_chgAS + self.E_disE + E_disAS)
 
-            revenue = (self.revenue_energy + self.revenue_fcas + self.capacity_payment) 
+            revenue = (self.revenue_energy + self.revenue_fcas + self.capacity_payment + self.imbalance_revenue) 
             reward = (self.revenue_energy + self.revenue_fcas + self.capacity_payment +  self.imbalance_revenue - self.degradation_cost) / 10000
-            self.total_revenue_energy += self.revenue_energy
-            self.total_revenue_fcas += self.revenue_fcas
-            self.total_capacity_payment += self.capacity_payment
-            self.total_cost_degradation += self.degradation_cost
-            self.total_imbalance_penalty += self.imbalance_revenue
+            
+            self.total_imbalance_penalty += self.pi_imb * lambda_ene * abs(E_imb)
+            self.total_revenue_energy    += self.revenue_energy + self.imbalance_revenue + self.pi_imb*lambda_ene*abs(E_imb)
+            self.total_revenue_fcas      += self.revenue_fcas
+            self.total_capacity_payment  += self.capacity_payment
+            self.total_cost_degradation  += self.degradation_cost
+            
             # self.total_prediction_penalty += prediction_penalty
                                     
             self.t += 1
             done = self.t >= len(self.pv_actual_norm)
     
             if done:
-                pd.DataFrame([{
-                    "self.revenue_energy": self.total_revenue_energy,
-                    "self.revenue_fcas": self.total_revenue_fcas,
-                    "self.capacity_payment": self.total_capacity_payment,
-                    "cost_degradation": self.total_cost_degradation,
-                    "imbalance_penalty": self.total_imbalance_penalty,
-                    "prediction_penalty":self.total_prediction_penalty
-                }]).to_csv(self.results_path, mode="a", header=False, index=False)
+                self.log_cnt += 1
+                if self.log_cnt % 100 == 0:                
+                    pd.DataFrame([{
+                        "revenue_energy": self.total_revenue_energy,
+                        "revenue_fcas": self.total_revenue_fcas,
+                        "capacity_payment": self.total_capacity_payment,
+                        "cost_degradation": self.total_cost_degradation,
+                        "imbalance_penalty": self.total_imbalance_penalty,
+                        "prediction_penalty":self.total_prediction_penalty
+                    }]).to_csv(self.results_path, mode="a", header=False, index=False)
+
                 obs = np.zeros(self.observation_space, dtype=np.float32)
             else:
                 obs = self._get_obs()

@@ -1,5 +1,6 @@
 import numpy as np
 import copy
+import os
 from tqdm import tqdm  # progress bar
 import torch.nn.functional as F
 import pandas as pd
@@ -163,8 +164,11 @@ class CodesignDDPGagent:
        # Prepare log writer
        ######################################
        if LOG_DIR:
+           os.makedirs(LOG_DIR, exist_ok=True)     
            summary_dir    = LOG_DIR
-           summary_writer = SummaryWriter(log_dir=summary_dir)
+           summary_writer = SummaryWriter(log_dir=summary_dir)           
+           os.makedirs(LOG_DIR+'/action', exist_ok=True)           
+           
        if LOG_DIR and SHOW_PROGRESS:
            print(f'Progress recorded: {summary_dir}')
            print(f'---> $tensorboard --logdir {summary_dir}')
@@ -174,11 +178,11 @@ class CodesignDDPGagent:
        ##########################################
        start = 0 if RESTART_EP == None else RESTART_EP
        if SHOW_PROGRESS:
-           iterator = tqdm(range(start, EPISODES), ascii=True, unit='episodes')
+           iterator = tqdm(range(start, EPISODES+1), ascii=True, unit='episodes')
        else:
-           iterator = range(start, EPISODES)
+           iterator = range(start, EPISODES+1)
        
-       current_datetime = datetime.now().strftime('%Y%m%d_%H%M')
+       current_datetime = datetime.now().strftime('%m%d_%H%M')
        reward_list  = []
        revenue_list = []
        rho_E_list   = []
@@ -201,7 +205,7 @@ class CodesignDDPGagent:
                 cost_per_PV = 0
                 
               # battery_price = battery_price_max*(1-np.exp(-scheduling_rate*(episode-300)))
-            elif episode < 7000:
+            elif episode < 3000:
                  cost_per_kWh = cost_per_kWh_max* (1-scheduling_rate)             
                  cost_per_kW = cost_per_kW_max* (1-scheduling_rate)
                  cost_per_PV = cost_per_kw_pv_max* (1-scheduling_rate)
@@ -276,25 +280,29 @@ class CodesignDDPGagent:
             
             
             # bidding_history.append(episode_bidding)   
+            if LOG_DIR and episode % 100 == 0:
+                b_res_history.append(episode_b_res)  # Save episode bidding data
+                b_up_history.append(episode_b_up)
+                b_dn_history.append(episode_b_dn)
+                a_imb_history.append(episode_a_imb)
+                E_disE_history.append(episode_E_disE)
+                E_short_history.append(episode_E_short)
+                b_en_history.append(episode_b_en)
+                soc_history.append(episode_soc)
+                p_pred_history.append(episode_p_pred)
+
             
-            b_res_history.append(episode_b_res)  # Save episode bidding data
-            b_up_history.append(episode_b_up)
-            b_dn_history.append(episode_b_dn)
-            a_imb_history.append(episode_a_imb)
-            E_disE_history.append(episode_E_disE)
-            E_short_history.append(episode_E_short)
-            b_en_history.append(episode_b_en)
-            soc_history.append(episode_soc)
-            p_pred_history.append(episode_p_pred)
             rho_E_list.append(rho_E)
             rho_P_list.append(rho_P)
             rho_I_list.append(rho_I)
             reward_list.append(episode_reward)
             revenue_list.append(episode_revenue)
+            
+            
             self.EXPL_NOISE *= self.noise_decay 
             self.EXPL_NOISE  = max(self.EXPL_NOISE,self.noise_min)
             
-            batch_size_codesign = 100
+            batch_size_codesign = 50
             if episode >= min_epi_codesign:
                  if episode % batch_size_codesign ==0:
             
@@ -311,17 +319,9 @@ class CodesignDDPGagent:
                     # update sigma            
                     sigma_grad = 0
                     sigma = sigma + learning_rate_sigma * sigma_grad
+                    
                     #  (rho_tensor - mu) ** 2  - sigma ** 2) / (sigma ** 3)
-            b_res_history.append(episode_b_res)
-            b_up_history.append(episode_b_up)
-            b_dn_history.append(episode_b_dn)
-            a_imb_history.append(episode_a_imb)
-            E_disE_history.append(episode_E_disE)
-            E_short_history.append(episode_E_short)
-            b_en_history.append(episode_b_en)
-            soc_history.append(episode_soc)
-            p_pred_history.append(episode_p_pred)
-            
+
             print(f"Episode {episode + 1}: Reward : {episode_reward}")
             print(f"Episode {episode + 1}: Reward_discount : {episode_reward_discount}")
             print(f"Episode {episode + 1}: Mu:{mu}")
@@ -329,38 +329,47 @@ class CodesignDDPGagent:
             ###################################################
             # Log
             ###################################################
-            if LOG_DIR:
-                summary_writer.add_scalar("Episode Reward", episode_reward, episode)
-                summary_writer.add_scalar("Episode Revenue", episode_revenue, episode)
-                summary_writer.add_scalar("Episode Q0",     q_values,     episode)
-                summary_writer.add_scalar('E_B', mu[0], episode)
-                summary_writer.add_scalar('P_B', mu[1], episode)
-                summary_writer.add_scalar('P_pv', mu[2], episode)
-                summary_writer.add_scalar('noise', self.EXPL_NOISE, episode)
+            if LOG_DIR and episode % 10 == 0:
+
+                capex  = rho_E * 1000 *cost_per_kWh + rho_P * 1000* cost_per_kW + rho_I *1000 *cost_per_PV
+                profit = episode_revenue * 365/7 - capex 
+
+                summary_writer.add_scalar("RL/Episode Reward", episode_reward, episode)
+                summary_writer.add_scalar("RL/Episode Q0",     q_values,     episode)
+                summary_writer.add_scalar('mu/E_B', mu[0], episode)
+                summary_writer.add_scalar('mu/P_B', mu[1], episode)
+                summary_writer.add_scalar('mu/P_pv', mu[2], episode)
+                summary_writer.add_scalar("Prof/Revenue", episode_revenue*365/7, episode)
+                summary_writer.add_scalar("Prof/Capex",   capex,  episode)
+                summary_writer.add_scalar("Prof/Profit",  profit, episode)
+
+                # summary_writer.add_scalar('noise', noise, episode)
                 
                 summary_writer.flush()
+                
        summary_writer.close()
-            
-       b_res_df = pd.DataFrame(b_res_history)
-       b_up_df = pd.DataFrame(b_up_history)
-       b_dn_df = pd.DataFrame(b_dn_history)
-       a_imb_df = pd.DataFrame(a_imb_history)
-       E_disE_df = pd.DataFrame(E_disE_history)
-       E_short_df = pd.DataFrame(E_short_history)
-       b_en_df = pd.DataFrame(b_en_history)
-       soc_df  = pd.DataFrame(soc_history)
-       p_pred_df  = pd.DataFrame(p_pred_history)
-        
-        # Save each DataFrame to CSV files
-       b_res_df.to_csv(f'action/episode_b_res_{mode}_{seed}_{current_datetime}.csv', index=False)
-       b_up_df.to_csv(f'action/episode_b_up_{mode}_{seed}_{current_datetime}.csv', index=False)
-       b_dn_df.to_csv(f'action/episode_b_dn_{mode}_{seed}_{current_datetime}.csv', index=False)
-       a_imb_df.to_csv(f'action/episode_a_imb_{mode}_{seed}_{current_datetime}.csv', index=False)
-       E_disE_df.to_csv(f'action/episode_E_disE_{mode}_{seed}_{current_datetime}.csv', index=False)
-       E_short_df.to_csv(f'action/episode_E_short_{mode}_{seed}_{current_datetime}.csv', index=False)
-       b_en_df.to_csv(f'action/episode_b_en_{mode}_{seed}_{current_datetime}.csv', index=False)
-       soc_df.to_csv(f'action/episode_soc_{mode}_{seed}_{current_datetime}.csv', index=False)        
-       p_pred_df.to_csv(f'action/episode_p_pred_{mode}_{seed}_{current_datetime}.csv', index=False)
+       
+       if LOG_DIR:
+           b_res_df = pd.DataFrame(b_res_history)
+           b_up_df = pd.DataFrame(b_up_history)
+           b_dn_df = pd.DataFrame(b_dn_history)
+           a_imb_df = pd.DataFrame(a_imb_history)
+           E_disE_df = pd.DataFrame(E_disE_history)
+           E_short_df = pd.DataFrame(E_short_history)
+           b_en_df = pd.DataFrame(b_en_history)
+           soc_df  = pd.DataFrame(soc_history)
+           p_pred_df  = pd.DataFrame(p_pred_history)
+           
+           # Save each DataFrame to CSV files
+           b_res_df.to_csv(LOG_DIR+f'/action/episode_b_res_{current_datetime}_{seed}.csv', index=False)
+           b_up_df.to_csv(LOG_DIR+f'/action/episode_b_up_{current_datetime}_{seed}.csv', index=False)
+           b_dn_df.to_csv(LOG_DIR+f'/action/episode_b_dn_{current_datetime}_{seed}.csv', index=False)
+           a_imb_df.to_csv(LOG_DIR+f'/action/episode_a_imb_{current_datetime}_{seed}.csv', index=False)
+           E_disE_df.to_csv(LOG_DIR+f'/action/episode_E_disE_{current_datetime}_{seed}.csv', index=False)
+           E_short_df.to_csv(LOG_DIR+f'/action/episode_E_short_{current_datetime}_{seed}.csv', index=False)
+           b_en_df.to_csv(LOG_DIR+f'/action/episode_b_en_{current_datetime}_{seed}.csv', index=False)
+           soc_df.to_csv(LOG_DIR+f'/action/episode_soc_{current_datetime}_{seed}.csv', index=False)        
+           p_pred_df.to_csv(LOG_DIR+f'/action/episode_p_pred_{current_datetime}_{seed}.csv', index=False)
                         
                 # if SAVE_AGENTS and episode % SAVE_FREQ == 0:
                 #     ckpt_path = summary_dir + f'/agent-{episode}'

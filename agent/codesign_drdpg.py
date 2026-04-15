@@ -249,7 +249,7 @@ class CodesignDRDPGagent:
               learning_rate_mu    = 1e-5,
               learning_rate_sigma = 0,
               min_epi_codesign    = 300,
-              pv_inv = 1,
+              pv_inv = 10,
               mu    = np.array([0.1, 0.1,0.1]),
               sigma = np.array([0.2, 0.2,0.2]),
               cost_per_kWh_max=241/10*0.8,#$241/kWh/10yr*150yen/$*0.8
@@ -296,27 +296,27 @@ class CodesignDRDPGagent:
         soc_history  = []
         p_pred_history  = []
         a_imb_history = []
-        E_disE_history = []
         E_short_history = []
+        E_disE_history = []
         scheduling_rate = 1
-                
+        
         # Train
         for episode in iterator:
             if episode < min_epi_codesign:
                cost_per_kW = 0
                cost_per_kWh = 0
-               cost_per_Inv = 0
+               cost_per_pv = 0
                
              # battery_price = battery_price_max*(1-np.exp(-scheduling_rate*(episode-300)))
             elif episode < 3000:
                 cost_per_kWh = cost_per_kWh_max* (1-scheduling_rate)             
                 cost_per_kW = cost_per_kW_max* (1-scheduling_rate)
-                cost_per_Inv = cost_per_kw_pv* (1-scheduling_rate)
+                cost_per_pv = cost_per_kw_pv* (1-scheduling_rate)
                 scheduling_rate = scheduling_rate*scheduling_decay
             else:
                 cost_per_kWh = cost_per_kWh_max
                 cost_per_kW  = cost_per_kW_max
-                cost_per_Inv = cost_per_kw_pv
+                cost_per_pv = cost_per_kw_pv
             
             done = False
             rho_E = max(0.05, np.random.normal(mu[0], sigma[0]))
@@ -331,8 +331,8 @@ class CodesignDRDPGagent:
             episode_b_up = []
             episode_b_dn = []
             episode_a_imb = []
-            episode_E_disE = []
             episode_E_short = []
+            episode_E_disE = []
             episode_b_en = []
             episode_soc = []
             episode_p_pred = []
@@ -350,13 +350,14 @@ class CodesignDRDPGagent:
                                                   noise)
 
                 # Do action
-                obs_prime, r, done, revenue = env.step(a)           
+                obs_prime, r, done, revenue = env.step(a)
+                
                 episode_b_res.append(env.b_res)  # Collect bidding data
                 episode_b_up.append(env.b_up)
                 episode_b_dn.append(env.b_dn)
                 episode_a_imb.append(env.a_imb)
-                episode_E_disE.append(env.E_disE)
                 episode_E_short.append(env.E_short)
+                episode_E_disE.append(env.E_disE)
                 episode_b_en.append(env.b_en)
                 episode_soc.append(env.soc)
                 episode_p_pred.append(env.p_pred)
@@ -391,8 +392,8 @@ class CodesignDRDPGagent:
             b_up_history.append(episode_b_up)
             b_dn_history.append(episode_b_dn)
             a_imb_history.append(episode_a_imb)
-            E_disE_history.append(episode_E_disE)
             E_short_history.append(episode_E_short)
+            E_disE_history.append(episode_E_disE)
             b_en_history.append(episode_b_en)
             soc_history.append(episode_soc)
             p_pred_history.append(episode_p_pred)
@@ -409,7 +410,7 @@ class CodesignDRDPGagent:
                     rhos_E    = np.array(rho_E_list[-10:])
                     rhos_P    = np.array(rho_P_list[-10:])
                     rhos_I    = np.array(rho_I_list[-10:])
-                    G = np.array(revenue_list[-10:])*365/7 - rhos_E * 1000 *cost_per_kWh - rhos_P * 1000* cost_per_kW - rhos_I *1000 *cost_per_Inv
+                    G = np.array(revenue_list[-10:])*365/7 - rhos_E * 1000 *cost_per_kWh - rhos_P * 1000* cost_per_kW - rhos_I *1000 *cost_per_pv
                     rhos = np.stack([rhos_E, rhos_P, rhos_I], axis=1)
                     # G       = q_max - rhos * battery_price  # Profit - battery_capacity * battery_price
                     mu_grad =  (((rhos - mu) / (sigma ** 2)) * (G - G.mean())[:, None]).mean(axis=0)
@@ -423,8 +424,8 @@ class CodesignDRDPGagent:
             b_up_history.append(episode_b_up)
             b_dn_history.append(episode_b_dn)
             a_imb_history.append(episode_a_imb)
-            E_disE_history.append(episode_E_disE)
             E_short_history.append(episode_E_short)
+            E_disE_history.append(episode_E_disE)
             b_en_history.append(episode_b_en)
             soc_history.append(episode_soc)
             p_pred_history.append(episode_p_pred)
@@ -437,13 +438,11 @@ class CodesignDRDPGagent:
             ###################################################
             if LOG_DIR:
                 summary_writer.add_scalar("Episode Reward", episode_reward, episode)
-                summary_writer.add_scalar("Episode Revenue", episode_revenue, episode)
+                summary_writer.add_scalar("Episode revenue",     episode_revenue,     episode)
                 summary_writer.add_scalar("Episode Q0",     q_values,     episode)
                 summary_writer.add_scalar('E_B', mu[0], episode)
                 summary_writer.add_scalar('P_B', mu[1], episode)
                 summary_writer.add_scalar('P_pv', mu[2], episode)
-                summary_writer.add_scalar('noise', noise, episode)
-                
                 summary_writer.flush()
         summary_writer.close()
                 
@@ -451,8 +450,8 @@ class CodesignDRDPGagent:
         b_up_df = pd.DataFrame(b_up_history)
         b_dn_df = pd.DataFrame(b_dn_history)
         a_imb_df = pd.DataFrame(a_imb_history)
-        E_disE_df = pd.DataFrame(E_disE_history)
         E_short_df = pd.DataFrame(E_short_history)
+        E_disE_df = pd.DataFrame(E_disE_history)
         b_en_df = pd.DataFrame(b_en_history)
         soc_df  = pd.DataFrame(soc_history)
         p_pred_df  = pd.DataFrame(p_pred_history)
@@ -462,8 +461,8 @@ class CodesignDRDPGagent:
         b_up_df.to_csv(f'action/episode_b_up_{mode}_{seed}_{current_datetime}.csv', index=False)
         b_dn_df.to_csv(f'action/episode_b_dn_{mode}_{seed}_{current_datetime}.csv', index=False)
         a_imb_df.to_csv(f'action/episode_a_imb_{mode}_{seed}_{current_datetime}.csv', index=False)
-        E_disE_df.to_csv(f'action/episode_E_disE_{mode}_{seed}_{current_datetime}.csv', index=False)
         E_short_df.to_csv(f'action/episode_E_short_{mode}_{seed}_{current_datetime}.csv', index=False)
+        E_disE_df.to_csv(f'action/episode_E_disE_{mode}_{seed}_{current_datetime}.csv', index=False)
         b_en_df.to_csv(f'action/episode_b_en_{mode}_{seed}_{current_datetime}.csv', index=False)
         soc_df.to_csv(f'action/episode_soc_{mode}_{seed}_{current_datetime}.csv', index=False)
         p_pred_df.to_csv(f'action/episode_p_pred_{mode}_{seed}_{current_datetime}.csv', index=False)

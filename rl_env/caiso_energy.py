@@ -7,16 +7,16 @@ class PV_BESS_AS_Env:
 
         # --- データ読み込み ---
         self.market_data = pd.read_csv(
-            "C:/Users/manta/OneDrive/ドキュメント/IEEE_TEMPR_value_stacking/data/caiso_dam_avg_price_week.csv",
+            "/home/students2/mantani/IEEE_TEMPR_value_stacking/data/caiso_dam_avg_price_week.csv",
             encoding="shift_jis")
         self.ancillary_data = pd.read_csv(
-            "C:/Users/manta/OneDrive/ドキュメント/IEEE_TEMPR_value_stacking/data/caiso_as_prices_week_region_columns.csv",
+            "/home/students2/mantani/IEEE_TEMPR_value_stacking/data/caiso_as_prices_week_region_columns.csv",
             encoding="shift_jis")
         self.pv_actual = pd.read_csv(
-            "C:/Users/manta/OneDrive/ドキュメント/IEEE_TEMPR_value_stacking/data/caiso_renewables_hourly_solar_week.csv",
+            "/home/students2/mantani/IEEE_TEMPR_value_stacking/data/caiso_renewables_hourly_solar_week.csv",
             encoding="shift_jis")
         self.pv_forecast = pd.read_csv(
-            "C:/Users/manta/OneDrive/ドキュメント/IEEE_TEMPR_value_stacking/data/caiso_renewables_forecast_solar_week_caiso.csv",
+            "/home/students2/mantani/IEEE_TEMPR_value_stacking/data/caiso_renewables_forecast_solar_week_caiso.csv",
             encoding="shift_jis")
         
         # --- 市場価格 & PVデータ ---
