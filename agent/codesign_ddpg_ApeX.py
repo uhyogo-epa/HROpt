@@ -17,14 +17,16 @@ class Actor(nn.Module):
         self.hidden_space = 128
         self.l1 = nn.Linear(state_dim+rho_dim, self.hidden_space)
         self.l2 = nn.Linear(self.hidden_space, self.hidden_space)
-        self.l3 = nn.Linear(self.hidden_space, action_dim)		
+        #self.l3 = nn.Linear(self.hidden_space, self.hidden_space)
+        self.lo = nn.Linear(self.hidden_space, action_dim)		
         self.max_action = max_action
         
     def forward(self, state,rho):
         x = torch.cat([state, rho], dim=-1)
         a = F.relu(self.l1(x))
         a = F.relu(self.l2(a))
-        raw_action = self.max_action * torch.tanh(self.l3(a))
+        #a = F.relu(self.l3(a))
+        raw_action = self.max_action * torch.tanh(self.lo(a))
         action = 0.5 * (raw_action + 1.0)
         return action
     
@@ -34,11 +36,13 @@ class Critic(nn.Module):
         self.hidden_space = 128
         self.l1 = nn.Linear(state_dim + action_dim + rho_dim, self.hidden_space)
         self.l2 = nn.Linear(self.hidden_space, self.hidden_space)
-        self.l3 = nn.Linear(self.hidden_space, 1)
+        #self.l3 = nn.Linear(self.hidden_space, self.hidden_space)
+        self.lo = nn.Linear(self.hidden_space, 1)
     def forward(self, state, action,rho):
         q1 = torch.relu(self.l1(torch.cat([state, action,rho], 1)))
         q1 = torch.relu(self.l2(q1))
-        q1 = self.l3(q1)
+        #q1 = torch.relu(self.l3(q1))
+        q1 = self.lo(q1)
         return q1
     
 ###########################################################################
