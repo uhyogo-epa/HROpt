@@ -214,7 +214,6 @@ If you use this repository in your research, please cite the associated paper.
 @article{hoshino2026hropt,
   title   = {Optimal design of solar-battery hybrid resources considering multi-market participation under weather and price uncertainty},
   author  = {Hoshino, Hikaru and Mantani, Taiyo and Furutani, Eiko},
-  journal = {Applied Energy},
   year    = {2026}
 }
 ```
@@ -225,12 +224,3 @@ If you use this repository in your research, please cite the associated paper.
 
 This repository is released under the **MIT License**.
 
----
-
-## Contact
-
-For questions regarding the paper or the code, please contact the authors.
-
-- Hikaru Hoshino
-- Taiyo Mantani
-- Eiko Furutani
