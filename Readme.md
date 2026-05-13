@@ -16,13 +16,15 @@ The project studies **PV-battery hybrid resource design and operation** under un
 
 The target setting is a hybrid resource participating in **energy**, **ancillary service**, and **capacity** markets while considering renewable forecast errors, battery constraints, and market uncertainty.
 
-<p align="center">
-  <img src="plot/co-design_framework.png" alt="Co-design framework" width="900">
-</p>
 
 ## Overview
 
 Hybrid resources that integrate PV and battery storage can exploit multiple value streams, but their design and operation are tightly coupled. This repository implements a DRL-based co-optimization framework that embeds design variables directly into the learning process so that sizing and operation are optimized in a unified stochastic setting.
+
+<p align="center">
+  <img src="plot/co-design_framework.png" alt="Co-design framework" width="600">
+</p>
+
 
 The repository includes:
 
